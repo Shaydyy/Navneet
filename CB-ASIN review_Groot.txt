@@ -1,0 +1,370 @@
+// ==UserScript==
+// @name            Groot
+// @description     This extension shows highlights ASINs in search results backfilled by KPEX
+// @version         1.0
+// @author          Navneet Singh, nvnsi@amazon.com
+// @Manager         Gourav Amlan,  gouamlan@amazon.com
+// @include         /^https?://(www|smile)\.(junglee|amazon)\.(com\.mx|com\.au|fr|com|co\.uk|de|co\.jp|in|it)/.*$/
+// @include         http://titan-prod-env4.yv8hy2e5i9.us-east-1.elasticbeanstalk.com/audit/update/*
+// @include         http://titan.compliance.hs3c.a2z.com/audit/update/*
+// @grant           GM_xmlhttpRequest
+// @grant           GM_log
+// @require         http://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.js
+// ==/UserScript==
+
+
+//=== Libraries included ===
+// jQuery v1.10.2 | (c) 2005, 2013 jQuery Foundation, Inc. | jquery.org/license
+// jQuery UI - v1.10.3 - 2013-05-03
+// jQuery.url ( Usage: $.url.param('asin'); )
+// getByXPath(string xpath)
+
+accept_attributes = ['manufacturer','brand', 'browse_merchandising_keyword', 'country_as_labelled', 'country_of_origin', 'product_type',
+					 'gl_product_group_type', 'manufacturer_minimum_age', 'material', 'is_adult_product',
+                     'size', 'mpaa_rating', 'shelf_life', 'voltage'];
+
+marketPlaceMap = {
+    1    : { "url":"amazon.com",   "country":"us", "region":"na", "lang":"en_US", "server":"normalization-na.aka.amazon.com"   },
+    3    : { "url":"amazon.co.uk", "country":"uk", "region":"eu", "lang":"en_GB", "server":"normalization-eu.aka.amazon.com"   },
+    4    : { "url":"amazon.de",    "country":"de", "region":"eu", "lang":"de_DE", "server":"normalization-eu.aka.amazon.com"   },
+    5    : { "url":"amazon.fr",    "country":"fr", "region":"eu", "lang":"fr_FR", "server":"normalization-eu.aka.amazon.com"   },
+    6    : { "url":"amazon.co.jp", "country":"jp", "region":"fe", "lang":"ja_JP", "server":"normalization-asia.aka.amazon.com" },
+    7    : { "url":"amazon.ca",    "country":"ca", "region":"na", "lang":"en_CA", "server":"normalization-na.aka.amazon.com"   },
+    3240 : { "url":"amazon.cn",    "country":"cn", "region":"cn", "lang":"zh_CN", "server":"normalization-asia.aka.amazon.com" },
+    35691: { "url":"amazon.it",    "country":"it", "region":"eu", "lang":"it_IT", "server":"normalization-eu.aka.amazon.com"   },
+    44551: { "url":"amazon.es",    "country":"es", "region":"eu", "lang":"es_ES", "server":"normalization-eu.aka.amazon.com"   },
+    44561: { "url":"junglee.com",  "country":"ju", "region":"eu", "lang":"en_IN", "server":"normalization-asia.aka.amazon.com" },
+    44571: { "url":"amazon.in",    "country":"in", "region":"eu", "lang":"en_IN", "server":"normalization-asia.aka.amazon.com" },
+    771770:{ "url":"amazon.com.mx","country":"mx", "region":"eu", "lang":"es_MX", "server":"normalization-na.aka.amazon.com"   },
+    111172:{ "url":"amazon.com.au","country":"au", "region":"fe", "lang":"en_AU", "server":"normalization-asia.aka.amazon.com" }
+};
+
+
+function getMarketPlace() {
+    var url = "" + window.location.toString();
+
+    //Special handling for MX
+    marketplaceID = 771770;
+    if (url.indexOf(marketPlaceMap[marketplaceID]["url"])  != -1) {
+        return marketplaceID;
+    }
+
+    //Special handling for AU
+    marketplaceID = 111172;
+    if (url.indexOf(marketPlaceMap[marketplaceID]["url"])  != -1) {
+        return marketplaceID;
+    }
+
+    for(var marketplaceID in marketPlaceMap) {
+        if (url.indexOf(marketPlaceMap[marketplaceID]["url"])  != -1) {
+            return marketplaceID;
+        }
+    }
+}
+
+function getUrl(marketplaceID) {
+    return marketPlaceMap[marketplaceID]["url"];
+}
+
+function getRegion(marketplaceID) {
+    return marketPlaceMap[marketplaceID]["region"];
+}
+
+function getServer(marketplaceID) {
+    return marketPlaceMap[marketplaceID]["server"];
+}
+
+function getLang(marketplaceID) {
+    return marketPlaceMap[marketplaceID]["lang"];
+}
+
+function getBrowseNode(value) {
+    var nodeid = null;
+    var params = value.toString().split(",");
+    if (params.length > 0) {
+        for ( var i in params) {
+            var p = params[i].split(":");
+            if (p.length > 1) {
+                var k = p[0];
+                var v = p[1];
+                if (k == "n") {
+                    nodeid = v;
+                }
+            }
+        }
+    }
+    return nodeid;
+}
+
+function getBrowseNodeFromUrl() {
+    var url = "" + window.location.toString();
+    var query_string = url.split("?");
+    if (query_string.length > 1) {
+        var params = query_string[1].split("&");
+        if (params.length > 0) {
+            for ( var i in params) {
+                var param_item = params[i].split("=");
+                if (param_item.length > 0) {
+                    var key = unescape(param_item[0]);
+                    var value = unescape(param_item[1]);
+                    //console.log("KEY=" + key + ", VALUE=" + value);
+                    if (key == "rh") {
+                        return getBrowseNode(value);
+                    } else if (key == "node") {
+                        return value;
+                    } else if (key == "url") {
+                        var sub_param_items = value.split("=");
+                        if (sub_param_items.length > 0) {
+                            var sub_key = sub_param_items[0];
+                            var sub_value = sub_param_items[1];
+                            if (sub_key == "node") {
+                                return sub_value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return null;
+}
+
+
+//Function to extract value from ion
+function attrValue(v) {
+	return (v.string_value || (v.value + (v.unit? (" " + v.unit) : ""))) + (v.language_tag? ("[" + v.language_tag + "]") : "");
+}
+
+
+function insertNLSLink(self, asin, mkt) {
+
+    region = getRegion(mkt);
+    url = getUrl(mkt);
+    server = getServer(mkt);
+    lang = getLang(mkt);
+
+    doubleQuote = '\x22';
+
+
+    s = $('span', self)[0];
+
+    if (s != null && $('#title-' + asin).size() == 0) {
+        //https://csi.amazon.com/view?view=simple_product_data_view&item_id=B008VUNRZQ&marketplace_id=1
+        csiLink = '<a title="CSI" target=_blank href=https://csi.amazon.com/view?view=simple_product_data_view&item_id=' + asin + '&marketplace_id=' + mkt + '>' +
+                  '<img src=//m.media-amazon.com/images/I/41BRFIkKwqL._AC_SS450_.jpg height=100 width=100></img></a>&nbsp;';
+        whereIsAsinLink = '<a title="Browse Assignment Query Tool" target=_blank href=http://bas-query-tool-' + region + '.amazon.com/gp/internal/assignment/query-tool.html?asins=' + asin + '%3A' + mkt + '&assignments=1>';
+                          //'<img src=http://findicons.com/files/icons/2132/tiny/10/info.png></img></a>&nbsp;';
+        catalogLink = '<a title="Catalog Dumper" target=_blank href=http://' + url + '/gp/private/catalog/dumper.html/?ASIN=' + asin + '>' +
+                  '<img src=//internal-cdn.amazon.com/w.amazon.com/skins/Amazon/images/external.png></img></a>&nbsp;';
+
+        ims_url = 'http://imsv3.amazon.com/dd/diagnostic/marketplaceItem/'+ mkt + '/' + asin;
+        imsLink = '<a title="IMS" target=_blank href=' + ims_url + '>' + '<img src=http://imsv3.amazon.com/favicon.ico height=0 width=0></img></a>&nbsp;';
+
+        assign_url = 'https://' + url + '/gp/internal/bx/twister/variational-relationships/variations-debugger.html?asin=' + asin;
+        assignLink = '<a title="Variation debugger" target=_blank href=' + assign_url + '>' + '<img src=http://findicons.com/files/icons/2132/tiny/10/info.png height=0 width=0></img></a>&nbsp;';
+
+        $(self).prepend('<div id="title-' + asin + '"><span>' + asin + '&nbsp;' +
+        csiLink +
+        whereIsAsinLink +
+        imsLink +
+        assignLink +
+        '</span> </div>').css('font-size', '10px');
+
+        params = {asin:asin, url:ims_url};
+        readCrossSiteText(ims_url, params, function(data, params) {
+            if (data != null) {
+
+                try {
+                    var json_data = JSON.parse(data);
+                    console.log("JSON data: " + json_data.item_id);
+                    product = json_data.product;
+                    create_time = json_data.create_time;
+
+                    {
+                        {
+                            var objectKeys = $.map(product, function(value, key) {
+
+                            	if (!accept_attributes.includes(key)) {
+                            		return null;
+                            	}
+
+                            	//console.log("value:" + JSON.stringify(value) + " inner_key:" + key)
+
+								var disp_val = value.map(attrValue).join(", ");
+
+
+                                if (disp_val != 'undefined') {
+                                    return key + "</td><td>" + disp_val;
+                                } else {
+                                    disp_values = [];
+                                    for (var k = 0; k < value.length; k++) {
+                                        inner_product = value[k];
+                                        var attrKeys = $.map(inner_product, function(inner_value, inner_key) {
+
+                                        	//console.log("inner_value:" + JSON.stringify(inner_value) + " inner_key:" + inner_key)
+
+                                        	if (inner_key.startsWith("$")) {
+                                        		return null;
+                                        	}
+
+                                        	if (inner_value) {
+                                        		inner_disp_val = inner_value.map(attrValue).join(", ");
+												return inner_key + ":" + inner_disp_val;
+											} else {
+												return null;
+											}
+                                        }).filter(function(value) { return (value != null) } );
+                                        disp_values.push(attrKeys.join("; "));
+                                    }
+                                    return key + "</td><td> {" + disp_values.join() + "}";
+                                }
+                            }).filter(function(value) { return (value != null) } );
+
+                            objectKeys.push('create_time</td><td>' + create_time);
+
+                            if (objectKeys.length > 0) {
+                            	//Create attribute value table
+                            	var component = "<tbody><tr><td>" + objectKeys.join("</td></tr><tr><td>") + " </td></tr></tbody>";
+                            	//component = "<thead><tr><th><b>Attribute</b></th><th><b>Value</b></th></tr></thead>" + component;
+                            	component = "<table border=0 cellpadding=0 cellspacing=0>" + component + "</table>";
+                            	component  = '<div style="height:500px;overflow:auto;color:indigo;line-height:10px;background-color:LightCyan;border-style:solid;border-width:4px;">' + component + '</div>';
+
+                                $('#title-' + params.asin).after(component);
+
+								//Create bonsai link
+                            	var product_type = product.product_type.map(function(v) {return v.value})[0];
+                            	console.log("product_type = " + product_type);
+
+                            	var brand = product.brand
+                            		.filter(function(v) { return (v.language_tag == lang)} )
+                            		.map(function(v) { return v.value; })[0];
+                            	console.log("brand = " + brand);
+                            	//https://normalization-na.aka.amazon.com/#search?q=json.entity.context_keys:%22Element%20TELEVISION%22&lang=en_US
+                            	bonsai_url="https://" + server + "/#search?lang=" + lang + "&q=json.entity.context_keys:" + encodeURIComponent('"' + brand + ' ' + product_type + '"');
+								console.log("bonsai_url = " + bonsai_url);
+
+
+								bonsaiLink = '<a title="Brand Normalization UI" target=_blank href="'+ bonsai_url + '">';
+										 // '<img src=//internal-cdn.amazon.com/w.amazon.com/skins/Amazon/images/external.png></img></a>';
+                                $('#title-' + params.asin + ' span').append(bonsaiLink);
+                            }
+                        }
+                    }
+
+                } catch(err) {
+                    console.log("JSON parse error at url: " + params.url + " err: " + err);
+                }//try
+            }//if inner
+        });
+    }//if outer
+}
+
+function bookmarlet_annotateSearchResults() {
+    console.info('bookmarlet_annotateSearchResults()');
+	mkt = getMarketPlace();
+
+	var asins = [];
+    $("[id^='result_']").each(function () {
+        asin = this.getAttribute('name')||this.getAttribute('data-asin');
+        asins.push(asin);
+        insert_loc = (mkt != 44561)? $("div", this).first(): this;//Special treatment for Junglee
+        insertNLSLink(insert_loc, asin, mkt);
+    });
+
+    $("#title_feature_div").each(function () {
+        asin = $("#ASIN").attr("value");
+        asins.push(asin);
+        insertNLSLink(this, asin, mkt);
+    });
+
+    var s = $('#asin-list-box');
+    if (s != null && s.length == 0) {
+        $('#resultsCol').after("<textarea rows='4' cols='50' id='asin-list-box'>" +
+        	JSON.stringify({"mkt": mkt, "asins":asins}) +
+        	"</textarea>");
+    }
+}
+
+
+//========================================================================
+function readCrossSiteText(url, params, func) {
+    if (typeof GM_xmlhttpRequest != "undefined") {// Grease monkey on Firefox
+        GM_xmlhttpRequest({
+            method : "GET",
+            url : url,
+            headers: {"Accept": "application/json"},
+            onload : function(res) {
+                if (res.readyState == 4) {
+                    GM_log("GET(returned)"+ url + ", readyState=" + res.readyState + ", status=" + res.status);
+                    resp = unescape(res.responseText);
+                    func(resp, params);
+                }
+            },
+            onerror: function(res) {
+                GM_log("GET(returned)"+ url + ", readyState=" + res.readyState + ", status="
+                        + res.status + ", responseText=" + res.responseText);
+            }
+        });
+    } else {// Chrome
+        var xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = function() {
+            if (this.readyState == 4) {
+                window.console.log("GET(returned)", url + ", readyState=" + this.readyState + ", status=" + this.status
+                        + ", responseText=" + this.responseText);
+                var resp = this.responseText;
+                func(resp, params);
+            }
+        };
+        console.log("GET(invoked)", url);
+        xhr.open("GET", url, true);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.withCredentials = "true";
+        xhr.send(null);
+    }
+}
+
+window.zGbl_DOM_ChangeTimer = 0;
+
+function HandleDOM_Change () {
+    console.info('HandleDOM_Change');
+    bookmarlet_annotateSearchResults();
+}
+
+function HandleDOM_ChangeWithDelay (zEvent) {
+    //console.info('HandleDOM_ChangeWithDelay: tagName = ' + (zEvent.target.tagName) + " id = " + (zEvent.target.id));
+    if (window.zGbl_DOM_ChangeTimer !== 0) {
+        window.clearTimeout(zGbl_DOM_ChangeTimer);
+        window.zGbl_DOM_ChangeTimer = 0;
+    }
+    window.zGbl_DOM_ChangeTimer = window.setTimeout(HandleDOM_Change, 500);
+}
+
+function main() {
+    $(document).ready(bookmarlet_annotateSearchResults);
+    //bookmarlet_annotateSearchResults();
+    $(document).bind ("DOMSubtreeModified", HandleDOM_ChangeWithDelay);
+}
+
+
+
+
+
+
+
+
+
+
+//================ JQuery: extension-url ================
+//================= XPath elements ================
+function getByXPath(xpath) {
+    var xresult = document.evaluate(xpath, document, null, XPathResult.ANY_TYPE, null);
+    var xnodes = [];
+    var xres;
+    while ((xres = xresult.iterateNext()) == True) {
+        xnodes.push(xres);
+    }
+   return xnodes;
+}
+//================= XPath elements ================
+
+main();
